@@ -36,7 +36,19 @@ jobs:
       - name: Configure Git Credentials
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.email "41898282+github-actions[bot]"
+
+      # 【新增步骤】在运行脚本前，从 GitHub Secrets 读取 JSON 文本并写入到 cookies.json
+      - name: Restore Cookie File
+        env:
+          COOKIES_DATA: ${{ secrets.COOKIES_JSON_DATA }}
+        run: |
+          if [ -n "$COOKIES_DATA" ]; then
+            echo "$COOKIES_DATA" > cookies.json
+            echo "✅ 已成功将 Secrets 中的 Cookie 写入 cookies.json"
+          else
+            echo "⚠️ 未找到 COOKIES_JSON_DATA，将尝试正常登录"
+          fi
 
       - name: Run Crawler Script
         env:
