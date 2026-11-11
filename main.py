@@ -124,17 +124,12 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, context, username, password):
-    if 'x.qhkch.com' in page.url and 'login' not in page.url:
-        print(
-            f'[{get_current_time_str()}] 🎉 检测到当前已在系统主站内，直接复用当前登录状态！'
-        )
-        try:
-            cookies = context.cookies()
-            with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(cookies, f, ensure_ascii=False, indent=4)
-        except Exception:
-            pass
-        return page
+    # 打印当前加载的 Cookie 数量排查问题
+    try:
+        cookies = context.cookies()
+        print(f'[{get_current_time_str()}] 🍪 当前上下文已加载 Cookie 数量: {len(cookies)}')
+    except Exception as e:
+        print(f'[{get_current_time_str()}] ⚠️ 获取 Cookie 列表异常: {e}')
 
     if os.path.exists(COOKIE_FILE):
         print(
@@ -149,15 +144,20 @@ def auto_login_and_close_ad(page, context, username, password):
                 page,
                 'https://x.qhkch.com/variety/position?variety=%E8%9E%BA%E7%BA%B9%E9%92%A2&code=all&date=2024-01-02',
             )
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(4000)
 
-            if 'login' not in page.url:
+            # 关键检查：如果跳转到了登录页，说明 Cookie 失效
+            if 'login' not in page.url and 'passport' not in page.url:
                 print(
                     f'[{get_current_time_str()}] 🎉 Cookie 有效！成功实现免登录直接进入系统！'
                 )
                 return page
-        except Exception:
-            pass
+            else:
+                print(
+                    f'[{get_current_time_str()}] ⚠️ Cookie 已失效，当前页面 URL: {page.url}，将转入账号密码自动登录...'
+                )
+        except Exception as e:
+            print(f'[{get_current_time_str()}] ⚠️ Cookie 加载异常: {e}')
 
     print(f'[{get_current_time_str()}] 正在打开登录页面...')
     login_url = 'https://passport.qhkch.com/login?continuation_id=qhkch_authz_2HgWV1yGs3Ryw3-l_swF2Vj3RWleWNm99eSWKZupzlc'
@@ -236,7 +236,7 @@ def auto_login_and_close_ad(page, context, username, password):
                 except Exception:
                     pass
 
-            if 'login' not in page.url:
+            if 'login' not in page.url and 'passport' not in page.url:
                 print(f'[{get_current_time_str()}] 🎉 恭喜！成功登录系统！')
                 try:
                     cookies = context.cookies()
@@ -629,6 +629,11 @@ def main():
             print(
                 f'[{get_current_time_str()}] ❌ 登录状态获取失败，退出程序！'
             )
+            # 登录失败时截个图保存，方便在 GitHub Artifacts 里查看
+            try:
+                page.screenshot(path='login_fail.png')
+            except Exception:
+                pass
             browser.close()
             return
 
@@ -666,34 +671,41 @@ def main():
                 main_contract_str = '全合约'
                 start_t = time.time()
 
-                for fetch_attempt in range(1, 3):
-                    try:
-                        encoded_variety = urllib.parse.quote(variety_search_kw)
-                        target_url = f'https://x.qhkch.com/variety/position?variety={encoded_variety}&code=all&date={date_str}'
-                        safe_goto(page, target_url)
+                try:
+                    encoded_variety = urllib.parse.quote(variety_search_kw)
+                    target_url = f'https://x.qhkch.com/variety/position?variety={encoded_variety}&code=all&date={date_str}'
+                    safe_goto(page, target_url)
 
-                        # 给予充足时间等待表格渲染出来（最多等 8 秒）
-                        start_time = time.time()
-                        while time.time() - start_time < 8:
-                            page.wait_for_timeout(500)
-                            page_status = page.evaluate("""
-                                () => {
-                                    const bodyText = document.body.innerText || '';
-                                    const tables = document.querySelectorAll('table');
-                                    let hasTableWithData = false;
-                                    for (let t of tables) {
-                                        if (t && t.querySelectorAll && t.querySelectorAll('tr').length > 1) {
-                                            hasTableWithData = true;
-                                            break;
-                                        }
+                    start_time = time.time()
+                    has_data = False
+                    while time.time() - start_time < 8:
+                        page.wait_for_timeout(400)
+                        page_status = page.evaluate("""
+                            () => {
+                                const bodyText = document.body.innerText || '';
+                                const tables = document.querySelectorAll('table');
+                                let hasTableWithData = false;
+                                for (let t of tables) {
+                                    if (t && t.querySelectorAll && t.querySelectorAll('tr').length > 1) {
+                                        hasTableWithData = true;
+                                        break;
                                     }
-                                    const noData = bodyText.includes('暂无数据') || bodyText.includes('没有数据');
-                                    return { hasData: hasTableWithData, noData: noData };
                                 }
-                            """)
-                            if page_status['noData'] or page_status['hasData']:
-                                break
+                                const noData = bodyText.includes('暂无数据') || bodyText.includes('没有数据');
+                                const isLogin = bodyText.includes('登录') && bodyText.includes('密码');
+                                return { hasData: hasTableWithData, noData: noData, isLogin: isLogin };
+                            }
+                        """)
+                        # 如果不小心被踢回登录页，打印提示
+                        if page_status['isLogin']:
+                            print(f'[{get_current_time_str()}] ⚠️ 警告：检测到页面跳转回了登录页，可能登录态已失效！')
+                        if page_status['noData']:
+                            break
+                        if page_status['hasData']:
+                            has_data = True
+                            break
 
+                    if has_data:
                         page_info = page.evaluate(
                             """
                             (varietyCode) => {
@@ -794,13 +806,11 @@ def main():
 
                         long_rows = table_data.get('long_table', [])
                         short_rows = table_data.get('short_table', [])
-                        break
 
-                    except Exception as e:
-                        print(
-                            f'[{get_current_time_str()}] ⚠️ 品种 {display_variety_name} 异常: {e} (重试 {fetch_attempt}/2)'
-                        )
-                        page.wait_for_timeout(1000)
+                except Exception as e:
+                    print(
+                        f'[{get_current_time_str()}] ⚠️ 品种 {display_variety_name} 异常: {e}'
+                    )
 
                 long_list = []
                 for row in long_rows:
@@ -849,8 +859,7 @@ def main():
                     f'[{get_current_time_str()}] [{index}/{len(raw_varieties)}] 日期: {date_str} | 品种: {display_variety_name:<10} | 主力合约: {main_contract_str:<8} | 多头: {len(df_long):2d}条 | 空头: {len(df_short):2d}条 | 耗时: {elapsed:.1f}s'
                 )
 
-                # 正常轻量间隙，保持高效顺畅
-                time.sleep(random.uniform(0.5, 1.0))
+                time.sleep(random.uniform(0.3, 0.6))
 
             export_excel_for_date(parsed_variety_data, date_str, output_folder)
 
