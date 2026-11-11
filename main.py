@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
 import json
 import os
+import random
 import re
 import time
 import urllib.parse
-import chinese_calendar as chinesecalendar  # 需确保安装：pip install chinesecalendar
+import chinese_calendar as chinesecalendar
 import ddddocr
 import openpyxl
 import pandas as pd
@@ -16,12 +17,10 @@ OUTPUT_ROOT = '龙虎榜数据_长期历史汇总'
 
 
 def get_current_time_str():
-    """获取当前格式化时间戳字符串，用于控制台实时打印"""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
 def get_trade_days_in_range(start_str, end_str):
-    """获取指定日期范围内的所有实际交易日列表"""
     try:
         start_date = datetime.strptime(start_str.strip(), '%Y%m%d')
         end_date = datetime.strptime(end_str.strip(), '%Y%m%d')
@@ -40,7 +39,6 @@ def get_trade_days_in_range(start_str, end_str):
 
 
 def input_with_timeout(prompt, timeout=10):
-    """带 10 秒倒计时的终端输入函数（在云端无交互时会自动超时并返回 None）"""
     import sys
     import threading
 
@@ -70,7 +68,7 @@ def input_with_timeout(prompt, timeout=10):
     print()
     if thread.is_alive():
         print(
-            f'[{get_current_time_str()}] ⌛ 输入超时（或非交互式环境），将自动使用默认长期范围 (2024.1.1 - 2026.10.31)！'
+            f'[{get_current_time_str()}] ⌛ 输入超时，将自动使用默认长期范围 (2024.1.1 - 2026.10.31)！'
         )
         return None
 
@@ -78,7 +76,6 @@ def input_with_timeout(prompt, timeout=10):
 
 
 def parse_net_position(val_str):
-    """解析净持仓文本为数值，用于精确排序"""
     if not val_str or not isinstance(val_str, str):
         return 0
 
@@ -96,7 +93,6 @@ def parse_net_position(val_str):
 
 
 def parse_change_val(val_str):
-    """解析增减量文本为数值，用于判断是否增仓"""
     if not val_str or not isinstance(val_str, str):
         return 0.0
     clean_str = re.sub(r'[^\d.-]', '', val_str.replace(',', ''))
@@ -107,7 +103,6 @@ def parse_change_val(val_str):
 
 
 def check_company_match(seat_name, target_companies):
-    """判断席位名称是否属于目标期货公司"""
     for company in target_companies:
         if company in seat_name:
             return True
@@ -115,7 +110,6 @@ def check_company_match(seat_name, target_companies):
 
 
 def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
-    """安全打开网页，带超时和重试机制"""
     for attempt in range(1, 4):
         try:
             page.goto(url, wait_until=wait_until, timeout=timeout)
@@ -130,7 +124,6 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, context, username, password):
-    """智能登录：优先使用 Cookie，若已在主站则直接复用并保存，否则自动输入账号密码登录"""
     if 'x.qhkch.com' in page.url and 'login' not in page.url:
         print(
             f'[{get_current_time_str()}] 🎉 检测到当前已在系统主站内，直接复用当前登录状态！'
@@ -154,7 +147,7 @@ def auto_login_and_close_ad(page, context, username, password):
 
             safe_goto(
                 page,
-                'https://x.qhkch.com/variety/position?variety=%E8%9E%BA%E7%BA%B9%E9%92%A2&code=all&date=2026-11-10',
+                'https://x.qhkch.com/variety/position?variety=%E8%9E%BA%E7%BA%B9%E9%92%A2&code=all&date=2024-01-02',
             )
             page.wait_for_timeout(3000)
 
@@ -263,7 +256,6 @@ def auto_login_and_close_ad(page, context, username, password):
 
 
 def get_configured_varieties():
-    """期货品种清单"""
     varieties_list = [
         '1000中证/IM',
         '20号胶/NR',
@@ -341,7 +333,6 @@ def get_configured_varieties():
 
 
 def load_existing_data_for_date(output_folder, date_str):
-    """如果当天部分品种已抓取过，从已有 Excel 中恢复到内存，实现断点续传不重复抓取"""
     excel_path = os.path.join(
         output_folder, f'全品种期货持仓龙虎榜汇总_{date_str}.xlsx'
     )
@@ -409,7 +400,6 @@ def load_existing_data_for_date(output_folder, date_str):
 
 
 def export_excel_for_date(parsed_variety_data, date_str, output_folder):
-    """将某一天抓取到的所有品种数据完整汇总并导出为一个 Excel 表单"""
     output_file = os.path.join(
         output_folder, f'全品种期货持仓龙虎榜汇总_{date_str}.xlsx'
     )
@@ -603,7 +593,6 @@ def main():
         f'[{get_current_time_str()}] 📌 目标时间段 ({start_str} 至 {end_str}) 内共有交易日: {len(target_dates)} 天'
     )
 
-    # 优先从环境变量读取账号密码（兼容云端 Secrets 或本地），若无则使用默认值
     username = os.environ.get('QHKCH_USER', '18392272125')
     password = os.environ.get('QHKCH_PWD', 'lmn123')
 
@@ -611,22 +600,25 @@ def main():
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    # 检测是否在 GitHub Actions 云端运行
     is_ci = os.environ.get('CI') == 'true'
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=is_ci,  # 云端自动无头运行，本地保留有界面
-            slow_mo=300 if not is_ci else 0,  # 云端提速不需要慢动作
+            headless=is_ci,
+            slow_mo=300 if not is_ci else 0,
             args=[
                 '--ignore-certificate-errors',
                 '--ignore-ssl-errors',
                 '--allow-insecure-localhost',
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
             ],
         )
-        context = browser.new_context(ignore_https_errors=True)
+        context = browser.new_context(
+            ignore_https_errors=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         page = context.new_page()
 
         page.set_default_timeout(60000)
@@ -641,6 +633,7 @@ def main():
             return
 
         raw_varieties = get_configured_varieties()
+        consecutive_empty_count = 0  # 计数器：连续空数据触发重连防风控
 
         for d_idx, date_str in enumerate(target_dates, 1):
             parsed_variety_data = load_existing_data_for_date(
@@ -668,6 +661,14 @@ def main():
 
                 if display_variety_name in parsed_variety_data:
                     continue
+
+                # 防风控：如果连续 3 个品种都是 0 条数据，重新刷新验证页面状态
+                if consecutive_empty_count >= 3:
+                    print(f'[{get_current_time_str()}] ⚠️ 触发防风控机制，暂停 5 秒并刷新主页...')
+                    time.sleep(5)
+                    safe_goto(page, 'https://x.qhkch.com/variety/position')
+                    page.wait_for_timeout(3000)
+                    consecutive_empty_count = 0
 
                 long_rows = []
                 short_rows = []
@@ -803,7 +804,9 @@ def main():
 
                         long_rows = table_data.get('long_table', [])
                         short_rows = table_data.get('short_table', [])
-                        break
+
+                        if len(long_rows) > 1 or len(short_rows) > 1:
+                            break
 
                     except Exception as e:
                         print(
@@ -847,6 +850,11 @@ def main():
                         by='num_val', ascending=True
                     ).reset_index(drop=True)
 
+                if df_long.empty and df_short.empty:
+                    consecutive_empty_count += 1
+                else:
+                    consecutive_empty_count = 0
+
                 parsed_variety_data[display_variety_name] = {
                     'long': df_long,
                     'short': df_short,
@@ -858,7 +866,9 @@ def main():
                     f'[{get_current_time_str()}] [{index}/{len(raw_varieties)}] 日期: {date_str} | 品种: {display_variety_name:<10} | 主力合约: {main_contract_str:<8} | 多头: {len(df_long):2d}条 | 空头: {len(df_short):2d}条 | 耗时: {elapsed:.1f}s'
                 )
 
-            # 当天所有品种跑完后，统一保存一次 Excel
+                # **关键修改**：请求间增加 1~3 秒随机延迟，规避频繁请求风控
+                time.sleep(random.uniform(1.0, 3.0))
+
             export_excel_for_date(parsed_variety_data, date_str, output_folder)
 
         browser.close()
