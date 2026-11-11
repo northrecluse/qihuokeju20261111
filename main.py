@@ -633,7 +633,6 @@ def main():
             return
 
         raw_varieties = get_configured_varieties()
-        consecutive_empty_count = 0  # 计数器：连续空数据触发重连防风控
 
         for d_idx, date_str in enumerate(target_dates, 1):
             parsed_variety_data = load_existing_data_for_date(
@@ -662,29 +661,22 @@ def main():
                 if display_variety_name in parsed_variety_data:
                     continue
 
-                # 防风控：如果连续 3 个品种都是 0 条数据，重新刷新验证页面状态
-                if consecutive_empty_count >= 3:
-                    print(f'[{get_current_time_str()}] ⚠️ 触发防风控机制，暂停 5 秒并刷新主页...')
-                    time.sleep(5)
-                    safe_goto(page, 'https://x.qhkch.com/variety/position')
-                    page.wait_for_timeout(3000)
-                    consecutive_empty_count = 0
-
                 long_rows = []
                 short_rows = []
                 main_contract_str = '全合约'
                 start_t = time.time()
 
-                for fetch_attempt in range(1, 4):
+                for fetch_attempt in range(1, 3):
                     try:
                         encoded_variety = urllib.parse.quote(variety_search_kw)
                         target_url = f'https://x.qhkch.com/variety/position?variety={encoded_variety}&code=all&date={date_str}'
                         safe_goto(page, target_url)
 
+                        # 给予充足时间等待表格渲染出来（最多等 8 秒）
                         start_time = time.time()
-                        while time.time() - start_time < 12:
-                            page.wait_for_timeout(800)
-                            is_rendered = page.evaluate("""
+                        while time.time() - start_time < 8:
+                            page.wait_for_timeout(500)
+                            page_status = page.evaluate("""
                                 () => {
                                     const bodyText = document.body.innerText || '';
                                     const tables = document.querySelectorAll('table');
@@ -696,13 +688,11 @@ def main():
                                         }
                                     }
                                     const noData = bodyText.includes('暂无数据') || bodyText.includes('没有数据');
-                                    return (bodyText.includes('多头') || bodyText.includes('空头') || noData) && (hasTableWithData || noData);
+                                    return { hasData: hasTableWithData, noData: noData };
                                 }
                             """)
-                            if is_rendered:
+                            if page_status['noData'] or page_status['hasData']:
                                 break
-
-                        page.wait_for_timeout(600)
 
                         page_info = page.evaluate(
                             """
@@ -804,15 +794,13 @@ def main():
 
                         long_rows = table_data.get('long_table', [])
                         short_rows = table_data.get('short_table', [])
-
-                        if len(long_rows) > 1 or len(short_rows) > 1:
-                            break
+                        break
 
                     except Exception as e:
                         print(
-                            f'[{get_current_time_str()}] ⚠️ 品种 {display_variety_name} 异常: {e} (重试 {fetch_attempt}/3)'
+                            f'[{get_current_time_str()}] ⚠️ 品种 {display_variety_name} 异常: {e} (重试 {fetch_attempt}/2)'
                         )
-                        page.wait_for_timeout(1500)
+                        page.wait_for_timeout(1000)
 
                 long_list = []
                 for row in long_rows:
@@ -850,11 +838,6 @@ def main():
                         by='num_val', ascending=True
                     ).reset_index(drop=True)
 
-                if df_long.empty and df_short.empty:
-                    consecutive_empty_count += 1
-                else:
-                    consecutive_empty_count = 0
-
                 parsed_variety_data[display_variety_name] = {
                     'long': df_long,
                     'short': df_short,
@@ -866,8 +849,8 @@ def main():
                     f'[{get_current_time_str()}] [{index}/{len(raw_varieties)}] 日期: {date_str} | 品种: {display_variety_name:<10} | 主力合约: {main_contract_str:<8} | 多头: {len(df_long):2d}条 | 空头: {len(df_short):2d}条 | 耗时: {elapsed:.1f}s'
                 )
 
-                # **关键修改**：请求间增加 1~3 秒随机延迟，规避频繁请求风控
-                time.sleep(random.uniform(1.0, 3.0))
+                # 正常轻量间隙，保持高效顺畅
+                time.sleep(random.uniform(0.5, 1.0))
 
             export_excel_for_date(parsed_variety_data, date_str, output_folder)
 
