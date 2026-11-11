@@ -1,0 +1,54 @@
+name: 龙虎榜数据自动爬虫
+
+on:
+  # 每 6 小时自动运行一次（北京时间 8点, 14点, 20点, 2点）
+  schedule:
+    - cron: '0 0,6,12,18 * * *'
+  
+  # 允许手动在网页端点击按钮运行
+  workflow_dispatch:
+
+jobs:
+  run-crawler:
+    runs-on: ubuntu-latest
+    
+    # 限制单次运行最大超时时间为 300 分钟（5小时）
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright pandas openpyxl chinesecalendar ddddocr
+          playwright install chromium --with-deps
+
+      - name: Configure Git Credentials
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run Crawler Script
+        env:
+          QHKCH_USER: "18392272125"
+          QHKCH_PWD: "lmn123"
+        run: |
+          python main.py
+
+      - name: Commit and Push Results
+        run: |
+          git status
+          git add 龙虎榜数据_长期历史汇总/ cookies.json || true
+          git commit -m "Auto-update: 龙虎榜数据与Cookie同步 [skip ci]" || echo "No changes to commit"
+          git push || echo "No changes to push"
