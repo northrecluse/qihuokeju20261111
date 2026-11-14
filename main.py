@@ -15,6 +15,10 @@ from playwright.sync_api import sync_playwright
 COOKIE_FILE = 'cookies.json'
 OUTPUT_ROOT = '龙虎榜数据_长期历史汇总'
 
+# 【新增】设置最大运行时间：5小时 = 5 * 3600 秒
+# 设为 4小时 50分钟（17400秒），留出 10 分钟余量用于保存和安全退出
+MAX_RUN_TIME_SECONDS = 4 * 3600 + 50 * 60
+
 
 def get_current_time_str():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -124,7 +128,6 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, context, username, password):
-    # 打印当前加载的 Cookie 数量排查问题
     try:
         cookies = context.cookies()
         print(f'[{get_current_time_str()}] 🍪 当前上下文已加载 Cookie 数量: {len(cookies)}')
@@ -146,7 +149,6 @@ def auto_login_and_close_ad(page, context, username, password):
             )
             page.wait_for_timeout(4000)
 
-            # 关键检查：如果跳转到了登录页，说明 Cookie 失效
             if 'login' not in page.url and 'passport' not in page.url:
                 print(
                     f'[{get_current_time_str()}] 🎉 Cookie 有效！成功实现免登录直接进入系统！'
@@ -602,6 +604,12 @@ def main():
 
     is_ci = os.environ.get('CI') == 'true'
 
+    # 【新增】记录程序开始运行的时间戳
+    script_start_time = time.time()
+    print(
+        f'[{get_current_time_str()}] ⏱️ 启动限时守护：脚本将最多运行 4 小时 50 分钟后自动安全退出并保存数据。'
+    )
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=is_ci,
@@ -617,7 +625,7 @@ def main():
         )
         context = browser.new_context(
             ignore_https_errors=True,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
         page = context.new_page()
 
@@ -629,7 +637,6 @@ def main():
             print(
                 f'[{get_current_time_str()}] ❌ 登录状态获取失败，退出程序！'
             )
-            # 登录失败时截个图保存，方便在 GitHub Artifacts 里查看
             try:
                 page.screenshot(path='login_fail.png')
             except Exception:
@@ -638,8 +645,17 @@ def main():
             return
 
         raw_varieties = get_configured_varieties()
+        time_out_triggered = False
 
         for d_idx, date_str in enumerate(target_dates, 1):
+            # 【新增】每次循环前检查是否超时
+            if time.time() - script_start_time > MAX_RUN_TIME_SECONDS:
+                print(
+                    f'\n[{get_current_time_str()}] ⏰ 【限时触发】脚本运行已接近 5 小时限制，正在准备安全退出...'
+                )
+                time_out_triggered = True
+                break
+
             parsed_variety_data = load_existing_data_for_date(
                 output_folder, date_str
             )
@@ -655,6 +671,14 @@ def main():
             )
 
             for index, raw_variety in enumerate(raw_varieties, 1):
+                # 【新增】在品种循环中也检查时间，防止单个日期品种过多导致超时滞后
+                if time.time() - script_start_time > MAX_RUN_TIME_SECONDS:
+                    print(
+                        f'[{get_current_time_str()}] ⏰ 【限时触发】在处理品种时达到 5 小时限制，正在保存当前已抓取的数据...'
+                    )
+                    time_out_triggered = True
+                    break
+
                 variety_search_kw = (
                     raw_variety.split('/')[0] if '/' in raw_variety else raw_variety
                 )
@@ -696,7 +720,6 @@ def main():
                                 return { hasData: hasTableWithData, noData: noData, isLogin: isLogin };
                             }
                         """)
-                        # 如果不小心被踢回登录页，打印提示
                         if page_status['isLogin']:
                             print(f'[{get_current_time_str()}] ⚠️ 警告：检测到页面跳转回了登录页，可能登录态已失效！')
                         if page_status['noData']:
@@ -861,13 +884,22 @@ def main():
 
                 time.sleep(random.uniform(0.3, 0.6))
 
+            # 保存当前日期的 Excel 汇总
             export_excel_for_date(parsed_variety_data, date_str, output_folder)
+
+            if time_out_triggered:
+                break
 
         browser.close()
 
-    print(
-        f"\n{'=' * 20} [{get_current_time_str()}] 全部历史抓取任务完成 {'=' * 20}"
-    )
+    if time_out_triggered:
+        print(
+            f"\n{'=' * 20} [{get_current_time_str()}] ⏳ 达到 5 小时运行限制，脚本已安全挂起退出。所有已抓取的数据均已完整保存！ {'=' * 20}"
+        )
+    else:
+        print(
+            f"\n{'=' * 20} [{get_current_time_str()}] 🎉 全部历史抓取任务完成 {'=' * 20}"
+        )
     print(
         f'[{get_current_time_str()}] 📁 所有 Excel 文件已存至文件夹: {OUTPUT_ROOT}'
     )
